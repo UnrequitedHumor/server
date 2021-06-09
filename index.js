@@ -1,6 +1,7 @@
 const mysql = require("mysql");
 const express = require("express");
 const bodyParser = require("body-parser");
+const cookieParser = require("cookie-parser");
 const emailValidator = require("email-validator");
 const bcrypt = require("bcrypt");
 const {OAuth2Client} = require("google-auth-library");
@@ -31,21 +32,52 @@ async function query(sql, values) {
   });
 }
 
+function makeHash(length) {
+  let result = "";
+  let hexChars = "0123456789abcdefghijklmnopqrstuvwxyz";
+  for (let i = 0; i < length; i += 1) {
+    result += hexChars[Math.floor(Math.random() * hexChars.length)];
+  }
+  return result;
+}
+
+async function createLoginToken(userId) {
+  let token = makeHash(8);
+  await query(`INSERT INTO logins (userId, token) VALUES (?, ?)`, [userId, token]);
+  return userId + ":" + token;
+}
+
+async function validateToken(req, res) {
+  let token = req.cookies.token;
+  if (!token) {
+    res.json({loggedIn: false});
+    return false;
+  }
+
+  const clearToken = (req, res) => {
+    res.clearCookie("token");
+    res.json({loggedIn: false, error: "Invalid token"});
+    return false;
+  };
+
+  token = token.split(":");
+  if (token.length !== 2) return clearToken(req, res);
+
+  let userId = token[0];
+  token = token[1];
+
+  let queryResult = await query(`SELECT userId FROM logins WHERE userId = ? AND token = ?`, [userId, token]);
+  if (queryResult.length === 0) return clearToken(req, res);
+
+  return userId;
+}
+
 const app = express();
 app.use(bodyParser.json());
+app.use(cookieParser());
 
-app.use((req, res, next) => {
-  let origin = req.headers.origin;
-  if (ALLOWED_ORIGINS.includes(origin)) res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, PATCH, DELETE");
-  res.setHeader("Access-Control-Allow-Headers", "X-Requested-With, Content-Type");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-
-  next();
-});
-
-app.get("/", (req, res) => {
-  res.json({success: true});
+app.get("/status", (req, res) => {
+  res.json({status: "OK"});
 });
 
 app.post("/login", async (req, res) => {
@@ -70,10 +102,16 @@ app.post("/login", async (req, res) => {
     const passwordsMatch = await bcrypt.compare(password, userData["passwordHash"]);
     if (!passwordsMatch) return res.json({error: "Invalid password"});
 
+    let userId = userData["userId"];
+    let loginToken = await createLoginToken(userId);
+
+    console.info("token: ", loginToken);
+    res.cookie("token", loginToken, {httpOnly: true, path: "/"});
     return res.json({
       success: true,
+      token: loginToken,
       user: {
-        id: userData["id"],
+        id: userId,
         email: userData["email"],
         emailVerified: !!userData["emailVerified"],
         firstName: userData["firstName"],
@@ -115,9 +153,12 @@ app.post("/register", async (req, res) => {
     );
 
     let userId = insertResult.insertId;
+    let loginToken = await createLoginToken(userId);
 
+    res.cookie("token", loginToken, {httpOnly: true, path: "/"});
     return res.json({
       success: true,
+      token: loginToken,
       user: {
         id: userId,
         email: email,
@@ -163,7 +204,7 @@ app.post("/google-login", async (req, res) => {
       return res.json({
         success: true,
         user: {
-          id: userData["id"],
+          id: userData["userId"],
           email: userData["email"],
           emailVerified: !!userData["emailVerified"],
           firstName: userData["firstName"],
@@ -182,9 +223,12 @@ app.post("/google-login", async (req, res) => {
     );
 
     let userId = insertRes.insertId;
+    let loginToken = await createLoginToken(userId);
 
+    res.cookie("token", loginToken, {httpOnly: true, path: "/"});
     return res.json({
       success: true,
+      token: loginToken,
       user: {
         id: userId,
         email: email,
@@ -197,8 +241,28 @@ app.post("/google-login", async (req, res) => {
     console.error("Google login caused error: ", e);
     return res.json({error: "An unexpected error occurred. Please try again"});
   }
-
 });
+
+app.get("/user", async (req, res) => {
+  let userId = await validateToken(req, res);
+  if (!userId) return;
+
+  let queryResults = await query("SELECT * from users WHERE userId = ?", [userId]);
+  if (queryResults.length === 0) return res.json({error: "Invalid User ID"});
+
+  let userData = queryResults[0];
+
+  res.json({
+    loggedIn: true,
+    user: {
+      id: userData["userId"],
+      email: userData["email"],
+      emailVerified: !!userData["emailVerified"],
+      firstName: userData["firstName"],
+      lastName: userData["lastName"]
+    }
+  });
+})
 
 app.listen(3001, () => {
   console.info("Server running on port 3001");
