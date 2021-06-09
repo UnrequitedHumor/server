@@ -6,7 +6,6 @@ const emailValidator = require("email-validator");
 const bcrypt = require("bcrypt");
 const {OAuth2Client} = require("google-auth-library");
 
-const ALLOWED_ORIGINS = ["http://localhost:3001", "http://localhost:3000", "https://unrequitedhumor.com"];
 const GOOGLE_CLIENT_ID = "453835501464-dho2cqor3l58bjqukplg64iviqjjajit.apps.googleusercontent.com";
 
 const oauthClient = new OAuth2Client(GOOGLE_CLIENT_ID);
@@ -51,13 +50,13 @@ async function validateToken(req, res) {
   let token = req.cookies.token;
   if (!token) {
     res.json({loggedIn: false});
-    return false;
+    return null;
   }
 
   const clearToken = (req, res) => {
     res.clearCookie("token");
     res.json({loggedIn: false, error: "Invalid token"});
-    return false;
+    return null;
   };
 
   token = token.split(":");
@@ -69,18 +68,18 @@ async function validateToken(req, res) {
   let queryResult = await query(`SELECT userId FROM logins WHERE userId = ? AND token = ?`, [userId, token]);
   if (queryResult.length === 0) return clearToken(req, res);
 
-  return userId;
+  return {id: userId, token: token};
 }
 
 const app = express();
 app.use(bodyParser.json());
 app.use(cookieParser());
 
-app.get("/status", (req, res) => {
+app.get("/api/status", (req, res) => {
   res.json({status: "OK"});
 });
 
-app.post("/login", async (req, res) => {
+app.post("/api/login", async (req, res) => {
   try {
     let email = req.body.email;
     let password = req.body.password;
@@ -124,7 +123,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-app.post("/register", async (req, res) => {
+app.post("/api/register", async (req, res) => {
   try {
     let firstName = req.body.firstName;
     let lastName = req.body.lastName;
@@ -175,7 +174,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
-app.post("/google-login", async (req, res) => {
+app.post("/api/google-login", async (req, res) => {
   try {
     let token = req.body.token;
 
@@ -243,11 +242,11 @@ app.post("/google-login", async (req, res) => {
   }
 });
 
-app.get("/user", async (req, res) => {
-  let userId = await validateToken(req, res);
-  if (!userId) return;
+app.get("/api/user", async (req, res) => {
+  let login = await validateToken(req, res);
+  if (!login) return;
 
-  let queryResults = await query("SELECT * from users WHERE userId = ?", [userId]);
+  let queryResults = await query("SELECT * from users WHERE userId = ?", [login.id]);
   if (queryResults.length === 0) return res.json({error: "Invalid User ID"});
 
   let userData = queryResults[0];
@@ -262,7 +261,22 @@ app.get("/user", async (req, res) => {
       lastName: userData["lastName"]
     }
   });
-})
+});
+
+
+app.post("/api/logout", async (req, res) => {
+  try {
+    let login = await validateToken(req, res);
+    if (!login) return;
+
+    await query("DELETE FROM logins WHERE userId = ? AND token = ?", [login.id, login.token])
+  } catch (e) {
+    console.warn("Failed to cleanly log user out:", e);
+  }
+
+  res.clearCookie("token");
+  res.json({error: "Failed to log out"});
+});
 
 app.listen(3001, () => {
   console.info("Server running on port 3001");
