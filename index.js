@@ -104,7 +104,6 @@ app.post("/api/login", async (req, res) => {
     let userId = userData["userId"];
     let loginToken = await createLoginToken(userId);
 
-    console.info("token: ", loginToken);
     res.cookie("token", loginToken, {httpOnly: true, path: "/"});
     return res.json({
       success: true,
@@ -199,11 +198,15 @@ app.post("/api/google-login", async (req, res) => {
         return res.json({error: "Please log in using your password"});
       }
 
+      let userId = userData["userId"];
+      let loginToken = await createLoginToken(userId);
+      res.cookie("token", loginToken, {httpOnly: true, path: "/"});
+
       // Return the existing matching google account
       return res.json({
         success: true,
         user: {
-          id: userData["userId"],
+          id: userId,
           email: userData["email"],
           emailVerified: !!userData["emailVerified"],
           firstName: userData["firstName"],
